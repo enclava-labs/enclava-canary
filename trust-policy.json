@@ -1,6 +1,6 @@
 {
   "schema_version": "enclava-trust-policy-v1",
-  "label": "enclava-canary preprod independent verification",
+  "label": "e2e-drill preprod independent verification (repinned 2026-09-08: fresh app post stale-seed incident, digest b555ce84)",
   "required_checks": [
     "binding.challenge_nonce",
     "binding.target_origin",
@@ -47,29 +47,29 @@
     "revocation_max_age_seconds": 3888000
   },
   "target": {
-    "origins": [
-      "https://e2e-drill.e62d05ff.enclava.dev"
-    ],
-    "image_digests": [
-      "sha256:321312aeec9c6b3f874615131fc95887414e82d139a0d09360b9710cdf3c51ac"
-    ],
-    "runtime_classes": [
-      "kata-qemu-snp"
+    "application_ids": [
+      "de7dbfad-238b-8703-916d-367a4de434ee"
     ],
     "attestation_proxy_digests": [
-      "sha256:9ccd66a38854a931d427acc6ce450f1070dc615da7c8fc28a4b2ae16f0033355"
+      "sha256:8d01f80ff9d051ea40c0da0543682c1b33898b795c5f1f755e852cd205d930fa"
     ],
     "caddy_digests": [
-      "sha256:54d00d58cea066b52ea7cfe3dd60c1d79236dabdce72f75aa375e50a0b063200"
+      "sha256:ba4182b5a9196649f1a43e38a434238f8826540bf0289b61e517e0143f16071e"
     ],
-    "platform_release_versions": [
-      "dev-2026.08.16-attestation-proxy-9ccd66a3.1"
+    "image_digests": [
+      "sha256:b555ce84fb55ae28510bdf493d3891da3766478a7b92e8dbd341cf4fffba8442"
     ],
     "organization_ids": [
       "b7b7638b-c9f8-46a8-9cc8-567a16b3a0bd"
     ],
-    "application_ids": [
-      "9150203d-6508-82d6-b376-824ba840a9b5"
+    "origins": [
+      "https://e2e-drill.e62d05ff.enclava.dev"
+    ],
+    "platform_release_versions": [
+      "preprod-2026.09.08-wave-b-parity.2"
+    ],
+    "runtime_classes": [
+      "kata-qemu-snp"
     ]
   },
   "trusted_org_keyring_sha256": [
