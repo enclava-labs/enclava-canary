@@ -5,8 +5,9 @@ command = ["python3", "/app/server.py"]
 
 [storage]
 paths = ["/app/data"]
-size = "10Gi"
-tls_size = "2Gi"
+# S1792 small-workload declaration: 2Gi app-data + 1Gi TLS PVCs.
+size = "2Gi"
+tls_size = "1Gi"
 
 [unlock]
 mode = "password"
@@ -23,8 +24,10 @@ allow = [
 ]
 
 [resources]
+# S1792 small shape: limit below 512Mi selects kata-qemu-snp-small rendering
+# (app request lowered to the limit, 64Mi sidecars, 1024Mi VM baseline).
 cpu = "1"
-memory = "2Gi"
+memory = "128Mi"
 
 [health]
 path = "/health"
