@@ -20,6 +20,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Contract gate (stdlib unittest — guest-report schema, nonce, capacity contract)
+        run: python3 -m unittest -v test_server.py
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
