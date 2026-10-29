@@ -52,6 +52,50 @@ enclava verify https://e2e-drill.e62d05ff.enclava.dev --policy trust-policy.json
 
 [![verify-nightly](https://github.com/gzuuus/enclava-canary/actions/workflows/verify-nightly.yml/badge.svg)](https://github.com/gzuuus/enclava-canary/actions/workflows/verify-nightly.yml)
 
+## Guest report (structured in-guest state)
+
+`GET /guest-report?nonce=<b64url-32B>` answers with a fixed-field JSON snapshot of the
+workload's in-guest state — the SSH replacement for the e2e suite's headless rows:
+
+```json
+{
+  "nonce": "…", "generated_at": 1760000000, "vantage": "workload-container",
+  "uname": {"sys": "Linux", "release": "…", "machine": "x86_64"},
+  "init_ready": true,
+  "mounts": {"/state": "…", "/app/data": "…"},
+  "block_devices": [{"name": "…", "size_sectors": 0}],
+  "mapper_devices": [],
+  "sev": {"dev_present": false, "attestation_type": "…", "runtime_class": "…"},
+  "sidecar": {"reachable": true, "claims_verified": true, "config_ready": true,
+              "state": "unlocked", "mode": "password", "error": null}
+}
+```
+
+- **Nonce semantics mirror the proof bundle**: exactly one `nonce` parameter
+  (duplicates rejected), padding-tolerant base64 of exactly 32 bytes; anything else is
+  `400 {"error": "nonce_invalid"}`. Responses are `Cache-Control: no-store`.
+- **This is a claim, like the page** — served by the workload, from the workload
+  container's vantage (the same one SSH had). The attested truth remains the sidecar's
+  `/status` and the proof bundle above; the route exists so test suites can assert state
+  fields instead of parsing SSH output. No shell, no arbitrary paths — the field list is
+  fixed and pinned by tests (`test_server.py`); changing it is a contract change.
+- `sev.attestation_type`/`runtime_class` and the `sidecar` block come from the in-pod
+  attestation-proxy (server-side fetch, as the page does); `dev_present` is a direct
+  `/dev/sev*` probe and is usually `false` in the workload container (namespace
+  artifact — same for `mapper_devices`). `sidecar.reachable` means "answered `/status`
+  with JSON" — in auto-unlock mode `/status` 404s by design, so it reads `false` there.
+  `sidecar.error` is the fixed string `"present"` when the sidecar reports an
+  error and `null` otherwise — the sidecar's error text is free-form and is
+  never reflected here; `/status` stays authoritative for details. The other
+  sidecar fields pass through only known values: `state`/`mode` must match the
+  proxy's ownership vocabulary, `claims_verified`/`config_ready` must be
+  booleans, and `sev.attestation_type`/`runtime_class` must be bounded
+  identifier strings — anything else reports `null`, never the raw value.
+  Device lists are capped at 32 entries.
+- The route lives on the **app origin** by design: `/.well-known/confidential/*` is
+  routed by the tenant ingress to the attestation-proxy (reserved namespace), so a
+  workload route cannot live under that prefix.
+
 ## Run locally
 
 ```bash

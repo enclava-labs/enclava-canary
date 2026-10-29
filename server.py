@@ -38,13 +38,21 @@ Capacity payload contract (see worker1-tenant-capacity-reliability plan E1):
 - `CANARY_NOISY=1` enables a short bounded noisy-output mode used only for
   the signed-runtime output-path check; it is off by default and never runs
   during capacity measurement.
+- `GET /guest-report?nonce=<b64url-32B>` answers a fixed-field snapshot of
+  in-guest state for the e2e suite's headless rows (the SSH replacement).
+  Exactly one nonce param, padding-tolerant base64 of exactly 32 bytes —
+  anything else is `400 {"error": "nonce_invalid"}`; all responses are
+  no-store. Like the page it is a workload CLAIM: the attested truth stays
+  in the sidecar's /status and the proof bundle.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
 import os
+import platform
 import re
 import socket
 import sys
@@ -53,6 +61,7 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
 
 HERE = Path(__file__).resolve().parent
 INDEX = HERE / "index.html"
@@ -503,11 +512,142 @@ def noisy_tick() -> None:
         stream.buffer.flush()
 
 
+# ---------------------------------------------------------------------------
+# Guest report: GET /guest-report?nonce=<b64url-32B> — fixed-field in-guest
+# state for the e2e suite's headless rows (the SSH replacement). No shell, no
+# arbitrary paths; a CLAIM from the workload container — the attested truth
+# stays in the sidecar's /status and the proof bundle. Nonce semantics mirror
+# the attestation-proxy's proof_nonce: exactly one `nonce` param,
+# padding-tolerant base64, exactly 32 bytes decoded.
+# ---------------------------------------------------------------------------
+
+REPORT_NONCE_BYTES = 32
+REPORT_NONCE_MAX_CHARS = 64
+REPORT_MAX_DEVICES = 32
+REPORT_IDENT_MAX_CHARS = 64
+REPORT_IDENT_CHARS = re.compile(r"[a-z0-9._-]+\Z")
+
+# Known ownership vocabulary from the sidecar's /status (OwnershipState /
+# OwnershipMode names); anything outside reports null instead of forwarding.
+SIDECAR_STATES = frozenset({"unclaimed", "locked", "unlocking", "unlocked", "error"})
+SIDECAR_MODES = frozenset({"legacy", "level1", "password", "auto-unlock"})
+
+
+def parse_report_nonce(query: str) -> str | None:
+    values = [value for key, value in parse_qsl(query, keep_blank_values=True) if key == "nonce"]
+    if len(values) != 1:
+        return None
+    raw = values[0]
+    if not raw or len(raw) > REPORT_NONCE_MAX_CHARS:
+        return None
+    stripped = raw.rstrip("=")
+    if not stripped or "=" in stripped:  # mid-string padding is invalid
+        return None
+    padded = stripped + "=" * ((4 - len(stripped) % 4) % 4)
+    try:
+        decoded = base64.b64decode(padded, altchars=b"-_", validate=True)
+    except Exception:
+        return None
+    return raw if len(decoded) == REPORT_NONCE_BYTES else None
+
+
+def _mount_source(path: str) -> str | None:
+    try:
+        for line in Path("/proc/mounts").read_text().splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == path:
+                return parts[0]
+    except OSError:
+        pass
+    return None
+
+
+def _block_devices() -> list:
+    out = []
+    try:
+        for dev in sorted(Path("/sys/block").glob("*")):
+            try:
+                out.append({"name": dev.name, "size_sectors": int((dev / "size").read_text().strip())})
+            except (OSError, ValueError):
+                continue
+            if len(out) >= REPORT_MAX_DEVICES:
+                break
+    except OSError:
+        pass
+    return out
+
+
+def _mapper_devices() -> list:
+    try:
+        return sorted(p.name for p in Path("/dev/mapper").iterdir())[:REPORT_MAX_DEVICES]
+    except OSError:
+        return []  # absent in the workload container — namespace artifact
+
+
+def _report_bool(value):
+    """Sidecar flag: real booleans only — anything else reports null rather
+    than a coerced or nested value."""
+    return value if isinstance(value, bool) else None
+
+
+def _report_enum(value, known):
+    """Known operational enum string, else null — unexpected sidecar values
+    are never forwarded."""
+    return value if isinstance(value, str) and value in known else None
+
+
+def _report_ident(value):
+    """Bounded identifier string (attestation_type, runtime_class): lowercase
+    token chars only, so free-form text can never pass."""
+    if isinstance(value, str) and len(value) <= REPORT_IDENT_MAX_CHARS:
+        if REPORT_IDENT_CHARS.match(value):
+            return value
+    return None
+
+
+def _sidecar_error(value) -> str | None:
+    # The sidecar's error text is free-form (KDF/filesystem/exception strings)
+    # and can embed secrets, paths, or config — never reflect it. This claim
+    # reports only that an error exists; the full status stays authoritative
+    # on the sidecar's /status.
+    return "present" if value else None
+
+
+def guest_report_payload(nonce: str) -> dict:
+    info = fetch("/v1/attestation/info")
+    status = fetch("/status")
+    u = platform.uname()
+    return {
+        "nonce": nonce,
+        "generated_at": int(time.time()),
+        "vantage": "workload-container",
+        "uname": {"sys": u.system, "release": u.release, "machine": u.machine},
+        "init_ready": Path("/run/enclava/init-ready").exists(),
+        "mounts": {p: _mount_source(p) for p in ("/state", "/app/data")},
+        "block_devices": _block_devices(),
+        "mapper_devices": _mapper_devices(),
+        "sev": {
+            "dev_present": any(Path("/dev").glob("sev*")),
+            "attestation_type": _report_ident(info.get("attestation_type")),
+            "runtime_class": _report_ident(info.get("runtime_class")),
+        },
+        "sidecar": {
+            "reachable": "_error" not in status,
+            "claims_verified": _report_bool(status.get("claims_verified")),
+            "config_ready": _report_bool(status.get("config_ready")),
+            "state": _report_enum(status.get("state"), SIDECAR_STATES),
+            "mode": _report_enum(status.get("mode"), SIDECAR_MODES),
+            "error": _sidecar_error(status.get("error")),
+        },
+    }
+
+
 class H(BaseHTTPRequestHandler):
     server_version = "enclava-canary"
 
     def do_GET(self):
-        if self.path == "/health":
+        path = urlsplit(self.path).path
+        if path == "/health":
             # Init precedes listen, so reaching this handler already means
             # workload setup + marker verification succeeded; the flag is a
             # second belt on the same contract.
@@ -515,9 +655,23 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, b"ok", "text/plain")
             else:  # pragma: no cover - unreachable once serving
                 self._send(503, b"not ready", "text/plain")
-        elif self.path == "/work":
+        elif path == "/work":
             self._work()
-        elif self.path == "/":
+        elif path == "/guest-report":
+            nonce = parse_report_nonce(urlsplit(self.path).query)
+            if nonce is None:
+                self._send(
+                    400,
+                    json.dumps({"error": "nonce_invalid"}).encode(),
+                    "application/json",
+                )
+            else:
+                self._send(
+                    200,
+                    json.dumps(guest_report_payload(nonce)).encode(),
+                    "application/json",
+                )
+        elif path == "/":
             payload = {
                 "attestation_info": fetch("/v1/attestation/info"),
                 "ownership_status": fetch("/status"),
@@ -555,6 +709,7 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
