@@ -58,6 +58,7 @@ import socket
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -642,6 +643,42 @@ def guest_report_payload(nonce: str) -> dict:
     }
 
 
+
+# Fixed outbound targets for the egress probe (no caller-supplied hosts).
+EGRESS_TARGETS = (
+    "https://api.openai.com/v1/models",
+    "https://raw.githubusercontent.com/github/gitignore/main/README.md",
+    "https://api.kraken.com/0/public/Time",
+    "https://api.coinbase.com/v2/time",
+    "https://api.binance.com/api/v3/time",
+    "https://relay.damus.io/",
+    "https://example.com/",
+)
+
+
+def egress_probe() -> dict:
+    """Connect to each fixed target; any HTTP status proves the path is open."""
+    results = []
+    for url in EGRESS_TARGETS:
+        host = urlsplit(url).hostname
+        entry = {"host": host}
+        started = time.monotonic()
+        try:
+            entry["resolved"] = sorted({a[4][0] for a in socket.getaddrinfo(host, 443)})[:4]
+            req = urllib.request.Request(url, headers={"User-Agent": "enclava-canary-egress-probe"})
+            try:
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    entry["http_status"] = r.status
+            except urllib.error.HTTPError as e:
+                entry["http_status"] = e.code
+            entry["reachable"] = True
+        except Exception as e:  # noqa: BLE001 - report the failure class only
+            entry["reachable"] = False
+            entry["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+        entry["ms"] = int((time.monotonic() - started) * 1000)
+        results.append(entry)
+    return {"reachable": sum(1 for r in results if r["reachable"]), "total": len(results), "results": results}
+
 class H(BaseHTTPRequestHandler):
     server_version = "enclava-canary"
 
@@ -655,6 +692,8 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, b"ok", "text/plain")
             else:  # pragma: no cover - unreachable once serving
                 self._send(503, b"not ready", "text/plain")
+        elif path == "/egress":
+            self._send(200, json.dumps(egress_probe()).encode(), "application/json")
         elif path == "/work":
             self._work()
         elif path == "/guest-report":
