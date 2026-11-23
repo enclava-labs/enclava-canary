@@ -677,7 +677,19 @@ def egress_probe() -> dict:
             entry["error"] = f"{type(e).__name__}: {str(e)[:120]}"
         entry["ms"] = int((time.monotonic() - started) * 1000)
         results.append(entry)
-    return {"reachable": sum(1 for r in results if r["reachable"]), "total": len(results), "results": results}
+    public_ip = None
+    try:
+        req = urllib.request.Request("https://ipinfo.io/ip", headers={"User-Agent": "enclava-canary-egress-probe"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            public_ip = r.read(64).decode("ascii", "replace").strip()
+    except Exception as e:  # noqa: BLE001
+        public_ip = f"error: {type(e).__name__}: {str(e)[:120]}"
+    return {
+        "public_ip": public_ip,
+        "reachable": sum(1 for r in results if r["reachable"]),
+        "total": len(results),
+        "results": results,
+    }
 
 class H(BaseHTTPRequestHandler):
     server_version = "enclava-canary"
